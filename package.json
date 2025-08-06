@@ -1,6 +1,16 @@
 {
+  "name": "pixelcalc-bot",
+  "version": "1.0.0",
+  "description": "Bot Discord que calcula o tempo de carregamento dos pixels",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": ["discord", "bot", "pixelcalc"],
+  "author": "Seu Nome",
+  "license": "MIT",
   "dependencies": {
-    "discord.js": "^14.21.0",
+    "discord.js": "^14.11.0",
     "dotenv": "^17.2.1"
   }
 }
