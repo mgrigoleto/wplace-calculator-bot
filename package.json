@@ -7,7 +7,7 @@
     "start": "node index.js"
   },
   "keywords": ["discord", "bot", "pixelcalc"],
-  "author": "Seu Nome",
+  "author": "Maurício Grigoleto",
   "license": "MIT",
   "dependencies": {
     "discord.js": "^14.11.0",
