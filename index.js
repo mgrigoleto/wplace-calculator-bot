@@ -1,13 +1,16 @@
 require('dotenv').config();
 const express = require('express');
 const { Client, GatewayIntentBits } = require('discord.js');
+const PDFDocument = require('pdfkit'); // Necessário para gerar o PDF
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Servidor web básico para keep-alive
+// ATENÇÃO: Embora isso ajude a responder requisições HTTP,
+// o Vercel não é ideal para hospedar um processo Discord bot 24/7.
 app.get('/', (req, res) => {
-    res.send('Bot está online!');
+    res.send('Bot está online e respondendo HTTP!');
 });
 
 app.listen(PORT, () => {
@@ -27,30 +30,132 @@ client.once('ready', () => {
     console.log(`✅ Bot online como ${client.user.tag}`);
 });
 
+// ------------------------------------------------------------------
+// COMANDO .calc (Funciona porque é simples e não usa I/O de disco)
+// ------------------------------------------------------------------
 client.on('messageCreate', message => {
-    if (!message.content.startsWith('.calc') || message.author.bot) return;
+    if (message.author.bot) return;
 
-    const args = message.content.split(' ');
-    const n = parseFloat(args[1]);
+    if (message.content.startsWith('.calc')) {
+        const args = message.content.split(' ');
+        const n = parseFloat(args[1]);
 
-    if (isNaN(n)) {
-        message.reply('❌ Por favor, digite um número válido. Ex: `.calc 900`');
-        return;
+        if (isNaN(n)) {
+            message.reply('❌ Por favor, digite um número válido. Ex: `.calc 900`');
+            return;
+        }
+
+        const totalHoras = (n * 30) / 3600;
+        const horas = Math.floor(totalHoras);
+        const minutos = Math.round((totalHoras - horas) * 60);
+        const minutosFormatados = minutos.toString().padStart(2, '0');
+
+        message.reply(`🕒 O tempo para carregar todos os seus pixels é **${horas}h:${minutosFormatados}m**`);
     }
-
-    const totalHoras = (n * 30) / 3600;
-    const horas = Math.floor(totalHoras);
-    const minutos = Math.round((totalHoras - horas) * 60);
-    const minutosFormatados = minutos.toString().padStart(2, '0');
-
-    message.reply(`🕒 O tempo para carregar todos os seus pixels é **${horas}h:${minutosFormatados}m**`);
 });
-
-const PDFDocument = require('pdfkit');
-const fs = require('fs');
 
 // Armazena conversas em andamento (por usuário)
 const conversasIR = new Map();
+
+/**
+ * Função para gerar o PDF do imposto de renda em memória (Buffer).
+ * Isso resolve o problema de incompatibilidade com o File System do Vercel.
+ * @param {object} conversa - Dados da conversa IR
+ * @returns {Promise<Buffer>} - O Buffer do arquivo PDF
+ */
+function generatePdfBuffer(conversa) {
+    return new Promise((resolve) => {
+        const doc = new PDFDocument();
+        const buffers = [];
+
+        // Coleta os pedaços do PDF em um array de buffers
+        doc.on('data', buffers.push.bind(buffers));
+
+        // Quando o documento termina, concatena os buffers em um único Buffer
+        doc.on('end', () => {
+            const pdfBuffer = Buffer.concat(buffers);
+            resolve(pdfBuffer);
+        });
+
+        // Extrai dados para o PDF
+        const { renda, dependentes, inss, outrasDeducoes } = conversa;
+
+        // ========================
+        // CÁLCULO ANUAL (Lógica mantida do código original)
+        // ========================
+
+        const deducaoDependentesAnual = dependentes * 2275.08;
+        const baseAnual = renda - inss - outrasDeducoes - deducaoDependentesAnual;
+
+        let impostoAnual = 0;
+
+        function faixa(valor, aliq, deduzir) {
+            return valor * aliq - deduzir;
+        }
+
+        if (baseAnual <= 22599.00) impostoAnual = 0;
+        else if (baseAnual <= 33919.80) impostoAnual = faixa(baseAnual, 0.075, 1694.93);
+        else if (baseAnual <= 45012.60) impostoAnual = faixa(baseAnual, 0.15, 4231.88);
+        else if (baseAnual <= 55976.16) impostoAnual = faixa(baseAnual, 0.225, 7604.72);
+        else impostoAnual = faixa(baseAnual, 0.275, 10432.32);
+
+        impostoAnual = Math.max(0, impostoAnual);
+
+        // ========================
+        // CÁLCULO MENSAL (IRRF REAL) (Lógica mantida do código original)
+        // ========================
+        const rendaMensal = renda / 12;
+        const inssMensal = inss / 12;
+        const outrasMensais = outrasDeducoes / 12;
+        const deducaoDependentesMensal = dependentes * 189.59; // valor mensal
+
+        const baseMensal = rendaMensal - inssMensal - outrasMensais - deducaoDependentesMensal;
+
+        function calcularIRRFMensal(base) {
+            if (base <= 2259.20) return 0;
+            if (base <= 2826.65) return base * 0.075 - 169.44;
+            if (base <= 3751.05) return base * 0.15 - 381.44;
+            if (base <= 4664.68) return base * 0.225 - 662.77;
+            return base * 0.275 - 896.00;
+        }
+
+        const irrfMensal = Math.max(0, calcularIRRFMensal(baseMensal));
+        const meses = [
+            'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+            'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+        ];
+
+        let textoIRRF = '';
+        meses.forEach(m => {
+            textoIRRF += `${m}: R$ ${irrfMensal.toFixed(2)}\n`;
+        });
+
+        // ===========================
+        // GERAÇÃO DO CONTEÚDO DO PDF
+        // ===========================
+
+        doc.fontSize(20).text("Cálculo de Imposto de Renda", { underline: true });
+        doc.moveDown();
+
+        doc.fontSize(12);
+        doc.text(`Renda anual: R$ ${renda.toFixed(2)}`);
+        doc.text(`Dependentes: ${dependentes}`);
+        doc.text(`INSS no ano: R$ ${inss.toFixed(2)}`);
+        doc.text(`Outras deduções: R$ ${outrasDeducoes.toFixed(2)}`);
+        doc.moveDown();
+
+        doc.text(`Base anual: R$ ${baseAnual.toFixed(2)}`);
+        doc.text(`Imposto devido anual: R$ ${impostoAnual.toFixed(2)}`);
+        doc.moveDown();
+
+        doc.fontSize(14).text("IRRF mensal:", { underline: true });
+        doc.fontSize(12).text(textoIRRF);
+
+        // Finaliza o documento, o que dispara o evento 'end' e resolve a Promise
+        doc.end();
+    });
+}
+
 
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
@@ -125,93 +230,22 @@ client.on('messageCreate', async message => {
         conversa.outrasDeducoes = outras;
 
         // Agora fecha o fluxo
-        const { renda, dependentes, inss, outrasDeducoes } = conversa;
         conversasIR.delete(message.author.id);
 
-        // ========================
-        // CÁLCULO ANUAL
-        // ========================
+        try {
+            // GERA O PDF EM MEMÓRIA (Buffer)
+            const pdfBuffer = await generatePdfBuffer(conversa);
 
-        const deducaoDependentesAnual = dependentes * 2275.08;
-        const baseAnual = renda - inss - outrasDeducoes - deducaoDependentesAnual;
-
-        let impostoAnual = 0;
-
-        function faixa(valor, aliq, deduzir) {
-            return valor * aliq - deduzir;
-        }
-
-        if (baseAnual <= 22599.00) impostoAnual = 0;
-        else if (baseAnual <= 33919.80) impostoAnual = faixa(baseAnual, 0.075, 1694.93);
-        else if (baseAnual <= 45012.60) impostoAnual = faixa(baseAnual, 0.15, 4231.88);
-        else if (baseAnual <= 55976.16) impostoAnual = faixa(baseAnual, 0.225, 7604.72);
-        else impostoAnual = faixa(baseAnual, 0.275, 10432.32);
-
-        impostoAnual = Math.max(0, impostoAnual);
-
-        // ========================
-        // CÁLCULO MENSAL (IRRF REAL)
-        // ========================
-        const rendaMensal = renda / 12;
-        const inssMensal = inss / 12;
-        const outrasMensais = outrasDeducoes / 12;
-        const deducaoDependentesMensal = dependentes * 189.59; // valor mensal
-
-        const baseMensal = rendaMensal - inssMensal - outrasMensais - deducaoDependentesMensal;
-
-        function calcularIRRFMensal(base) {
-            if (base <= 2259.20) return 0;
-            if (base <= 2826.65) return base * 0.075 - 169.44;
-            if (base <= 3751.05) return base * 0.15 - 381.44;
-            if (base <= 4664.68) return base * 0.225 - 662.77;
-            return base * 0.275 - 896.00;
-        }
-
-        const irrfMensal = Math.max(0, calcularIRRFMensal(baseMensal));
-        const meses = [
-            'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
-            'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
-        ];
-
-        let textoIRRF = '';
-        meses.forEach(m => {
-            textoIRRF += `${m}: R$ ${irrfMensal.toFixed(2)}\n`;
-        });
-
-        // ===========================
-        // GERAÇÃO DO PDF
-        // ===========================
-
-        const nomeArquivo = `ir_${message.author.id}.pdf`;
-        const doc = new PDFDocument();
-        const stream = fs.createWriteStream(nomeArquivo);
-        doc.pipe(stream);
-
-        doc.fontSize(20).text("Cálculo de Imposto de Renda", { underline: true });
-        doc.moveDown();
-
-        doc.fontSize(12);
-        doc.text(`Renda anual: R$ ${renda.toFixed(2)}`);
-        doc.text(`Dependentes: ${dependentes}`);
-        doc.text(`INSS no ano: R$ ${inss.toFixed(2)}`);
-        doc.text(`Outras deduções: R$ ${outrasDeducoes.toFixed(2)}`);
-        doc.moveDown();
-
-        doc.text(`Base anual: R$ ${baseAnual.toFixed(2)}`);
-        doc.text(`Imposto devido anual: R$ ${impostoAnual.toFixed(2)}`);
-        doc.moveDown();
-
-        doc.fontSize(14).text("IRRF mensal:", { underline: true });
-        doc.fontSize(12).text(textoIRRF);
-
-        doc.end();
-
-        stream.on('finish', () => {
+            // Responde com o Buffer do PDF
             message.reply({
                 content: `📊 Aqui está seu cálculo de IR e IRRF mês a mês!`,
-                files: [nomeArquivo]
-            }).then(() => fs.unlinkSync(nomeArquivo));
-        });
+                files: [{ attachment: pdfBuffer, name: 'calculo_imposto_de_renda.pdf' }]
+            });
+
+        } catch (error) {
+            console.error('Erro ao gerar PDF:', error);
+            message.reply('Houve um erro ao gerar o PDF. Tente novamente mais tarde.');
+        }
 
         return;
     }
