@@ -7,150 +7,214 @@ const PORT = process.env.PORT || 3000;
 
 // Servidor web básico para keep-alive
 app.get('/', (req, res) => {
-  res.send('Bot está online!');
+    res.send('Bot está online!');
 });
 
 app.listen(PORT, () => {
-  console.log(`Servidor de keep-alive rodando na porta ${PORT}`);
+    console.log(`Servidor de keep-alive rodando na porta ${PORT}`);
 });
 
 // Criação do cliente Discord
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds, 
-    GatewayIntentBits.GuildMessages, 
-    GatewayIntentBits.MessageContent
-  ],
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent
+    ],
 });
 
 client.once('ready', () => {
-  console.log(`✅ Bot online como ${client.user.tag}`);
+    console.log(`✅ Bot online como ${client.user.tag}`);
 });
 
 client.on('messageCreate', message => {
-  if (!message.content.startsWith('.calc') || message.author.bot) return;
+    if (!message.content.startsWith('.calc') || message.author.bot) return;
 
-  const args = message.content.split(' ');
-  const n = parseFloat(args[1]);
+    const args = message.content.split(' ');
+    const n = parseFloat(args[1]);
 
-  if (isNaN(n)) {
-    message.reply('❌ Por favor, digite um número válido. Ex: `.calc 900`');
-    return;
-  }
+    if (isNaN(n)) {
+        message.reply('❌ Por favor, digite um número válido. Ex: `.calc 900`');
+        return;
+    }
 
-  const totalHoras = (n * 30) / 3600;
-  const horas = Math.floor(totalHoras);
-  const minutos = Math.round((totalHoras - horas) * 60);
-  const minutosFormatados = minutos.toString().padStart(2, '0');
+    const totalHoras = (n * 30) / 3600;
+    const horas = Math.floor(totalHoras);
+    const minutos = Math.round((totalHoras - horas) * 60);
+    const minutosFormatados = minutos.toString().padStart(2, '0');
 
-  message.reply(`🕒 O tempo para carregar todos os seus pixels é **${horas}h:${minutosFormatados}m**`);
+    message.reply(`🕒 O tempo para carregar todos os seus pixels é **${horas}h:${minutosFormatados}m**`);
 });
+
+const PDFDocument = require('pdfkit');
+const fs = require('fs');
 
 // Armazena conversas em andamento (por usuário)
 const conversasIR = new Map();
 
 client.on('messageCreate', async message => {
-  if (message.author.bot) return;
+    if (message.author.bot) return;
 
-  const content = message.content.trim();
+    const content = message.content.trim();
 
-  // --- 1) INÍCIO DO COMANDO .imposto-de-renda ---
-  if (content.startsWith('.imposto-de-renda')) {
-    const args = content.split(' ');
-    const rendaAnual = parseFloat(args[1]);
+    // =====================================================
+    //  INÍCIO DO COMANDO .imposto-de-renda
+    // =====================================================
+    if (content.startsWith('.imposto-de-renda')) {
+        const args = content.split(' ');
+        const rendaAnual = parseFloat(args[1]);
 
-    if (isNaN(rendaAnual)) {
-      return message.reply('❌ Informe sua renda anual. Exemplo: `.imposto-de-renda 85000`');
+        if (isNaN(rendaAnual)) {
+            return message.reply('❌ Informe sua renda anual. Exemplo: `.imposto-de-renda 85000`');
+        }
+
+        // Cria fluxo de perguntas
+        conversasIR.set(message.author.id, {
+            renda: rendaAnual,
+            passo: 1,
+            dependentes: 0,
+            inss: 0,
+            outrasDeducoes: 0
+        });
+
+        return message.reply('👨‍🏫 Quantos **dependentes** você tem? (Digite apenas o número)');
     }
 
-    // Cria fluxo de perguntas
-    conversasIR.set(message.author.id, {
-      renda: rendaAnual,
-      passo: 1,
-      dependentes: 0,
-      inss: 0,
-      outrasDeducoes: 0
-    });
+    // Se o usuário estiver no fluxo:
+    const conversa = conversasIR.get(message.author.id);
+    if (!conversa) return;
 
-    return message.reply('👨‍🏫 Quantos **dependentes** você tem? (Digite apenas o número)');
-  }
+    const resposta = message.content.trim();
 
-  // --- 2) CONTINUAÇÃO DO FLUXO ---
-  const conversa = conversasIR.get(message.author.id);
-  if (!conversa) return;
+    // =====================================================
+    //  PASSO 1 — Dependentes
+    // =====================================================
+    if (conversa.passo === 1) {
+        const dep = parseInt(resposta);
+        if (isNaN(dep) || dep < 0)
+            return message.reply('❌ Digite um número válido de dependentes.');
 
-  const resposta = message.content.trim();
+        conversa.dependentes = dep;
+        conversa.passo = 2;
 
-  // Passo 1: dependentes
-  if (conversa.passo === 1) {
-    const dep = parseInt(resposta);
-
-    if (isNaN(dep) || dep < 0) {
-      return message.reply('❌ Digite um número válido de dependentes.');
+        return message.reply('💰 Quanto você pagou de **INSS no ano**? (A soma total em R$)');
     }
 
-    conversa.dependentes = dep;
-    conversa.passo = 2;
+    // =====================================================
+    //  PASSO 2 — INSS
+    // =====================================================
+    if (conversa.passo === 2) {
+        const inss = parseFloat(resposta);
+        if (isNaN(inss) || inss < 0)
+            return message.reply('❌ Digite um valor válido de INSS.');
 
-    return message.reply('💰 Quanto você pagou de **INSS no ano**? (A soma total em R$)');
-  }
+        conversa.inss = inss;
+        conversa.passo = 3;
 
-  // Passo 2: INSS
-  if (conversa.passo === 2) {
-    const inss = parseFloat(resposta);
-
-    if (isNaN(inss) || inss < 0) {
-      return message.reply('❌ Digite um valor válido de INSS.');
+        return message.reply('🧾 Tem **outras deduções**? (educação, saúde, etc). Se não tiver, responda 0.');
     }
 
-    conversa.inss = inss;
-    conversa.passo = 3;
+    // =====================================================
+    //  PASSO 3 — Outras deduções
+    // =====================================================
+    if (conversa.passo === 3) {
+        const outras = parseFloat(resposta);
+        if (isNaN(outras) || outras < 0)
+            return message.reply('❌ Digite um valor válido.');
 
-    return message.reply('🧾 Tem **outras deduções**? (mensalidade escolar, saúde, etc). Se não tiver, responda 0.');
-  }
+        conversa.outrasDeducoes = outras;
 
-  // Passo 3: outras deduções
-  if (conversa.passo === 3) {
-    const outras = parseFloat(resposta);
+        // Agora fecha o fluxo
+        const { renda, dependentes, inss, outrasDeducoes } = conversa;
+        conversasIR.delete(message.author.id);
 
-    if (isNaN(outras) || outras < 0) {
-      return message.reply('❌ Digite um valor válido.');
+        // ========================
+        // CÁLCULO ANUAL
+        // ========================
+
+        const deducaoDependentesAnual = dependentes * 2275.08;
+        const baseAnual = renda - inss - outrasDeducoes - deducaoDependentesAnual;
+
+        let impostoAnual = 0;
+
+        function faixa(valor, aliq, deduzir) {
+            return valor * aliq - deduzir;
+        }
+
+        if (baseAnual <= 22599.00) impostoAnual = 0;
+        else if (baseAnual <= 33919.80) impostoAnual = faixa(baseAnual, 0.075, 1694.93);
+        else if (baseAnual <= 45012.60) impostoAnual = faixa(baseAnual, 0.15, 4231.88);
+        else if (baseAnual <= 55976.16) impostoAnual = faixa(baseAnual, 0.225, 7604.72);
+        else impostoAnual = faixa(baseAnual, 0.275, 10432.32);
+
+        impostoAnual = Math.max(0, impostoAnual);
+
+        // ========================
+        // CÁLCULO MENSAL (IRRF REAL)
+        // ========================
+        const rendaMensal = renda / 12;
+        const inssMensal = inss / 12;
+        const outrasMensais = outrasDeducoes / 12;
+        const deducaoDependentesMensal = dependentes * 189.59; // valor mensal
+
+        const baseMensal = rendaMensal - inssMensal - outrasMensais - deducaoDependentesMensal;
+
+        function calcularIRRFMensal(base) {
+            if (base <= 2259.20) return 0;
+            if (base <= 2826.65) return base * 0.075 - 169.44;
+            if (base <= 3751.05) return base * 0.15 - 381.44;
+            if (base <= 4664.68) return base * 0.225 - 662.77;
+            return base * 0.275 - 896.00;
+        }
+
+        const irrfMensal = Math.max(0, calcularIRRFMensal(baseMensal));
+        const meses = [
+            'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+            'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+        ];
+
+        let textoIRRF = '';
+        meses.forEach(m => {
+            textoIRRF += `${m}: R$ ${irrfMensal.toFixed(2)}\n`;
+        });
+
+        // ===========================
+        // GERAÇÃO DO PDF
+        // ===========================
+
+        const nomeArquivo = `ir_${message.author.id}.pdf`;
+        const doc = new PDFDocument();
+        const stream = fs.createWriteStream(nomeArquivo);
+        doc.pipe(stream);
+
+        doc.fontSize(20).text("Cálculo de Imposto de Renda", { underline: true });
+        doc.moveDown();
+
+        doc.fontSize(12);
+        doc.text(`Renda anual: R$ ${renda.toFixed(2)}`);
+        doc.text(`Dependentes: ${dependentes}`);
+        doc.text(`INSS no ano: R$ ${inss.toFixed(2)}`);
+        doc.text(`Outras deduções: R$ ${outrasDeducoes.toFixed(2)}`);
+        doc.moveDown();
+
+        doc.text(`Base anual: R$ ${baseAnual.toFixed(2)}`);
+        doc.text(`Imposto devido anual: R$ ${impostoAnual.toFixed(2)}`);
+        doc.moveDown();
+
+        doc.fontSize(14).text("IRRF mensal:", { underline: true });
+        doc.fontSize(12).text(textoIRRF);
+
+        doc.end();
+
+        stream.on('finish', () => {
+            message.reply({
+                content: `📊 Aqui está seu cálculo de IR e IRRF mês a mês!`,
+                files: [nomeArquivo]
+            }).then(() => fs.unlinkSync(nomeArquivo));
+        });
+
+        return;
     }
-
-    conversa.outrasDeducoes = outras;
-
-    // CALCULAR imposto
-    const { renda, dependentes, inss, outrasDeducoes } = conversa;
-
-    const deducaoDependentes = dependentes * 2275.08; // valor anual
-    const base = renda - inss - outrasDeducoes - deducaoDependentes;
-
-    let imposto = 0;
-
-    function faixa(valor, aliq, deduzir) {
-      return valor * aliq - deduzir;
-    }
-
-    if (base <= 22599.00) imposto = 0;
-    else if (base <= 33919.80) imposto = faixa(base, 0.075, 1694.93);
-    else if (base <= 45012.60) imposto = faixa(base, 0.15, 4231.88);
-    else if (base <= 55976.16) imposto = faixa(base, 0.225, 7604.72);
-    else imposto = faixa(base, 0.275, 10432.32);
-
-    if (imposto < 0) imposto = 0;
-
-    conversasIR.delete(message.author.id);
-
-    return message.reply(
-      `📊 **Cálculo do Imposto de Renda**\n` +
-      `🧑‍💼 Renda anual: **R$ ${renda.toFixed(2)}**\n` +
-      `👨‍👩‍👧 Dependentes: **${dependentes}**\n` +
-      `🏦 INSS: **R$ ${inss.toFixed(2)}**\n` +
-      `🧾 Outras deduções: **R$ ${outrasDeducoes.toFixed(2)}**\n\n` +
-      `📉 Base de cálculo: **R$ ${base.toFixed(2)}**\n` +
-      `💵 Imposto devido: **R$ ${imposto.toFixed(2)}**`
-    );
-  }
 });
 
 
