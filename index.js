@@ -1,8 +1,6 @@
 require('dotenv').config();
 const express = require('express');
 const { Client, GatewayIntentBits } = require('discord.js');
-const PDFDocument = require('pdfkit');
-const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -29,47 +27,48 @@ client.once('ready', () => {
     console.log(`✅ Bot online como ${client.user.tag}`);
 });
 
-// Salva conversas do IR
+client.on('messageCreate', message => {
+    if (!message.content.startsWith('.calc') || message.author.bot) return;
+
+    const args = message.content.split(' ');
+    const n = parseFloat(args[1]);
+
+    if (isNaN(n)) {
+        message.reply('❌ Por favor, digite um número válido. Ex: `.calc 900`');
+        return;
+    }
+
+    const totalHoras = (n * 30) / 3600;
+    const horas = Math.floor(totalHoras);
+    const minutos = Math.round((totalHoras - horas) * 60);
+    const minutosFormatados = minutos.toString().padStart(2, '0');
+
+    message.reply(`🕒 O tempo para carregar todos os seus pixels é **${horas}h:${minutosFormatados}m**`);
+});
+
+const PDFDocument = require('pdfkit');
+const fs = require('fs');
+
+// Armazena conversas em andamento (por usuário)
 const conversasIR = new Map();
 
-// =========================
-//   LISTENER ÚNICO
-// =========================
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
 
     const content = message.content.trim();
-    const args = content.split(' ');
-    const comando = args[0].toLowerCase();
 
-    // ======================================
-    // .calc
-    // ======================================
-    if (comando === '.calc') {
-        const n = parseFloat(args[1]);
-
-        if (isNaN(n)) {
-            return message.reply('❌ Por favor, digite um número válido. Ex: `.calc 900`');
-        }
-
-        const totalHoras = (n * 30) / 3600;
-        const horas = Math.floor(totalHoras);
-        const minutos = Math.round((totalHoras - horas) * 60);
-        const minutosFormatados = minutos.toString().padStart(2, '0');
-
-        return message.reply(`🕒 O tempo para carregar todos os seus pixels é **${horas}h:${minutosFormatados}m**`);
-    }
-
-    // ======================================
-    // .imposto-de-renda (início do fluxo)
-    // ======================================
-    if (comando === '.imposto-de-renda') {
+    // =====================================================
+    //  INÍCIO DO COMANDO .imposto-de-renda
+    // =====================================================
+    if (content.startsWith('.imposto-de-renda')) {
+        const args = content.split(' ');
         const rendaAnual = parseFloat(args[1]);
 
         if (isNaN(rendaAnual)) {
             return message.reply('❌ Informe sua renda anual. Exemplo: `.imposto-de-renda 85000`');
         }
 
+        // Cria fluxo de perguntas
         conversasIR.set(message.author.id, {
             renda: rendaAnual,
             passo: 1,
@@ -81,15 +80,15 @@ client.on('messageCreate', async message => {
         return message.reply('👨‍🏫 Quantos **dependentes** você tem? (Digite apenas o número)');
     }
 
-    // ======================================
-    // FLUXO DE PERGUNTAS DO IR
-    // ======================================
+    // Se o usuário estiver no fluxo:
     const conversa = conversasIR.get(message.author.id);
     if (!conversa) return;
 
-    const resposta = content;
+    const resposta = message.content.trim();
 
-    // PASSO 1 — dependentes
+    // =====================================================
+    //  PASSO 1 — Dependentes
+    // =====================================================
     if (conversa.passo === 1) {
         const dep = parseInt(resposta);
         if (isNaN(dep) || dep < 0)
@@ -101,7 +100,9 @@ client.on('messageCreate', async message => {
         return message.reply('💰 Quanto você pagou de **INSS no ano**? (A soma total em R$)');
     }
 
-    // PASSO 2 — INSS
+    // =====================================================
+    //  PASSO 2 — INSS
+    // =====================================================
     if (conversa.passo === 2) {
         const inss = parseFloat(resposta);
         if (isNaN(inss) || inss < 0)
@@ -113,7 +114,9 @@ client.on('messageCreate', async message => {
         return message.reply('🧾 Tem **outras deduções**? (educação, saúde, etc). Se não tiver, responda 0.');
     }
 
-    // PASSO 3 — Outras deduções
+    // =====================================================
+    //  PASSO 3 — Outras deduções
+    // =====================================================
     if (conversa.passo === 3) {
         const outras = parseFloat(resposta);
         if (isNaN(outras) || outras < 0)
@@ -121,22 +124,21 @@ client.on('messageCreate', async message => {
 
         conversa.outrasDeducoes = outras;
 
-        // Fecha o fluxo
+        // Agora fecha o fluxo
+        const { renda, dependentes, inss, outrasDeducoes } = conversa;
         conversasIR.delete(message.author.id);
 
-        const { renda, dependentes, inss, outrasDeducoes } = conversa;
+        // ========================
+        // CÁLCULO ANUAL
+        // ========================
 
-        // ==========================
-        // CÁLCULOS
-        // ==========================
-
-        // --- Anual ---
-        const dedDepend = dependentes * 2275.08;
-        const baseAnual = renda - inss - outrasDeducoes - dedDepend;
+        const deducaoDependentesAnual = dependentes * 2275.08;
+        const baseAnual = renda - inss - outrasDeducoes - deducaoDependentesAnual;
 
         let impostoAnual = 0;
-        function faixa(v, aliq, deduzir) {
-            return v * aliq - deduzir;
+
+        function faixa(valor, aliq, deduzir) {
+            return valor * aliq - deduzir;
         }
 
         if (baseAnual <= 22599.00) impostoAnual = 0;
@@ -147,15 +149,17 @@ client.on('messageCreate', async message => {
 
         impostoAnual = Math.max(0, impostoAnual);
 
-        // --- Mensal (IRRF Real) ---
+        // ========================
+        // CÁLCULO MENSAL (IRRF REAL)
+        // ========================
         const rendaMensal = renda / 12;
         const inssMensal = inss / 12;
         const outrasMensais = outrasDeducoes / 12;
-        const dedDepMensal = dependentes * 189.59;
+        const deducaoDependentesMensal = dependentes * 189.59; // valor mensal
 
-        const baseMensal = rendaMensal - inssMensal - outrasMensais - dedDepMensal;
+        const baseMensal = rendaMensal - inssMensal - outrasMensais - deducaoDependentesMensal;
 
-        function irrf(base) {
+        function calcularIRRFMensal(base) {
             if (base <= 2259.20) return 0;
             if (base <= 2826.65) return base * 0.075 - 169.44;
             if (base <= 3751.05) return base * 0.15 - 381.44;
@@ -163,21 +167,31 @@ client.on('messageCreate', async message => {
             return base * 0.275 - 896.00;
         }
 
-        const irrfMensal = Math.max(0, irrf(baseMensal));
+        const irrfMensal = Math.max(0, calcularIRRFMensal(baseMensal));
+        const meses = [
+            'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+            'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+        ];
 
-        // ==========================
-        // PDF
-        // ==========================
+        let textoIRRF = '';
+        meses.forEach(m => {
+            textoIRRF += `${m}: R$ ${irrfMensal.toFixed(2)}\n`;
+        });
+
+        // ===========================
+        // GERAÇÃO DO PDF
+        // ===========================
+
         const nomeArquivo = `ir_${message.author.id}.pdf`;
         const doc = new PDFDocument();
         const stream = fs.createWriteStream(nomeArquivo);
-
         doc.pipe(stream);
 
         doc.fontSize(20).text("Cálculo de Imposto de Renda", { underline: true });
         doc.moveDown();
 
-        doc.fontSize(12).text(`Renda anual: R$ ${renda.toFixed(2)}`);
+        doc.fontSize(12);
+        doc.text(`Renda anual: R$ ${renda.toFixed(2)}`);
         doc.text(`Dependentes: ${dependentes}`);
         doc.text(`INSS no ano: R$ ${inss.toFixed(2)}`);
         doc.text(`Outras deduções: R$ ${outrasDeducoes.toFixed(2)}`);
@@ -188,23 +202,13 @@ client.on('messageCreate', async message => {
         doc.moveDown();
 
         doc.fontSize(14).text("IRRF mensal:", { underline: true });
-        doc.fontSize(12).text(
-            Array(12)
-                .fill(0)
-                .map((_, i) =>
-                    `${[
-                        'Janeiro','Fevereiro','Março','Abril','Maio','Junho',
-                        'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'
-                    ][i]}: R$ ${irrfMensal.toFixed(2)}`
-                )
-                .join("\n")
-        );
+        doc.fontSize(12).text(textoIRRF);
 
         doc.end();
 
         stream.on('finish', () => {
             message.reply({
-                content: `📊 Aqui está seu cálculo de IR + IRRF mês a mês!`,
+                content: `📊 Aqui está seu cálculo de IR e IRRF mês a mês!`,
                 files: [nomeArquivo]
             }).then(() => fs.unlinkSync(nomeArquivo));
         });
@@ -212,6 +216,7 @@ client.on('messageCreate', async message => {
         return;
     }
 });
+
 
 // Login do bot
 client.login(process.env.DISCORD_TOKEN);
